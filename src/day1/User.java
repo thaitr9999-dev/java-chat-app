@@ -26,10 +26,10 @@ public class User {
         System.out.println(username + (online ? " dang online" : " da offline"));
     }
     
-    // toString - KHÔNG DÙNG EMOJI
+    // toString 
     @Override
     public String toString() {
-        return username + " [" + (online ? "ONLINE" : "OFFLINE") + "]";
+        return username + " [" + (online ? "ONLINE nè" : "OFFLINE rồi") + "]";
     }
     
     // Test

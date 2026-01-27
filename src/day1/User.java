@@ -1,5 +1,7 @@
 package day1;
 
+import java.util.Objects;
+
 public class User {
     private String id;
     private String username;
@@ -29,10 +31,22 @@ public class User {
     // toString 
     @Override
     public String toString() {
-        return username + " [" + (online ? "ONLINE nè đó " : "OFFLINE rồi") + "]";
+        return username + " [" + (online ? "ONLINE" : "OFFLINE") + "]";
+    }
+
+    public boolean equals(Object obj) {
+        if (this == obj) return true;
+        if (obj == null || getClass() != obj.getClass()) return false;
+        User user = (User) obj;
+        return id.equals(user.id); 
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id); // Luôn override hashCode() cùng với equals()
     }
     
-    // Test
+
     public static void main(String[] args) {
         User user1 = new User("1", "Alice", "alice@email.com");
         user1.setOnline(true);

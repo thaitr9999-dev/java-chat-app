@@ -29,7 +29,7 @@ public class User {
     // toString 
     @Override
     public String toString() {
-        return username + " [" + (online ? "ONLINE nè" : "OFFLINE rồi") + "]";
+        return username + " [" + (online ? "ONLINE nè đó " : "OFFLINE rồi") + "]";
     }
     
     // Test

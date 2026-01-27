@@ -83,7 +83,5 @@ public class UserManager {
         
         userManager.removeUser("General", user1);
         userManager.listUsersInGroup("General");
-
-
     }
 }

@@ -6,7 +6,7 @@ import java.util.concurrent.*;
 // Sử dụng Collections thread-safe và Concurrent Collections
 public class ThreadSafeChatApp {
     // Cách 1: Dùng Collections.synchronizedXXX()
-    private Map<String, List<User>> chatRooms = 
+    private Map<String, List<User>> chatRooms =
         Collections.synchronizedMap(new HashMap<>());
     
     // Cách 2: Dùng ConcurrentHashMap (TỐT NHẤT cho chat app)

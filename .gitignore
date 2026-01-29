@@ -1,6 +1,50 @@
-﻿# Java compiled files
-bin/
+﻿# Java
 *.class
+*.jar
+*.war
+*.ear
 
-# VS Code
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
 .vscode/
+.settings/
+.classpath
+.project
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build
+build/
+out/
+dist/
+
+# Temp
+tmp/
+temp/
+
+# Spring Boot
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# Application
+application.properties
+application-dev.properties
+
+# Uploads
+uploads/

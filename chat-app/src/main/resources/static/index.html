@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8"> 
+    <title>Chat App - Day 5 Test</title>
+    <!-- SockJS + STOMP library -->
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+    <style>
+        body { font-family: Arial; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+        #messages { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 10px; margin-bottom: 10px; }
+        .message { margin: 5px 0; padding: 5px; background: #f0f0f0; border-radius: 4px; }
+        .join { color: green; font-style: italic; }
+        input { width: 70%; padding: 8px; }
+        button { padding: 8px 16px; margin-left: 5px; cursor: pointer; }
+        #status { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>Chat App — Day 5</h2>
+    <p>Status: <span id="status">Chưa kết nối</span></p>
+
+    <!-- Bước 1: Nhập tên -->
+    <div id="login-area">
+        <input type="text" id="username" placeholder="Nhập tên của bạn..." />
+        <button onclick="connect()">Kết nối</button>
+    </div>
+
+    <!-- Bước 2: Chat (ẩn cho đến khi kết nối) -->
+    <div id="chat-area" style="display:none">
+        <div id="messages"></div>
+        <input type="text" id="messageInput" placeholder="Nhập tin nhắn..." 
+               onkeypress="if(event.key==='Enter') sendMessage()" />
+        <button onclick="sendMessage()">Gửi</button>
+    </div>
+
+<script>
+    let stompClient = null;
+    let username = null;
+
+    function connect() {
+        username = document.getElementById('username').value.trim();
+        if (!username) {
+            alert('Nhập tên trước!');
+            return;
+        }
+stompClient = new StompJs.Client({
+    brokerURL: 'ws://localhost:8080/ws',  // ← WebSocket thuần, không cần SockJS
+    debug: function(str) { console.log('STOMP: ' + str); },
+    onConnect: function (frame) {
+        document.getElementById('status').style.color = 'green';
+        document.getElementById('status').innerText = 'Đã kết nối ✓';
+        document.getElementById('login-area').style.display = 'none';
+        document.getElementById('chat-area').style.display = 'block';
+
+        stompClient.subscribe('/topic/public', function (message) {
+            showMessage(JSON.parse(message.body));
+        });
+
+        stompClient.publish({
+            destination: '/app/chat.addUser',
+            body: JSON.stringify({ sender: username, type: 'JOIN' })
+        });
+    },
+    onDisconnect: function() {
+        document.getElementById('status').innerText = 'Mất kết nối';
+        document.getElementById('status').style.color = 'red';
+    }
+});
+
+stompClient.activate();
+    }
+
+    function sendMessage() {
+        const input = document.getElementById('messageInput');
+        const content = input.value.trim();
+        if (!content || !stompClient) return;
+
+        stompClient.publish({
+            destination: '/app/chat.sendMessage',
+            body: JSON.stringify({ sender: username, content: content, type: 'CHAT' })
+        });
+        input.value = '';
+    }
+
+    function showMessage(message) {
+        const div = document.createElement('div');
+        div.className = 'message' + (message.type === 'JOIN' ? ' join' : '');
+        div.innerText = message.type === 'JOIN'
+            ? `${message.sender} đã vào phòng chat`
+            : `${message.sender}: ${message.content}`;
+        document.getElementById('messages').appendChild(div);
+        document.getElementById('messages').scrollTop = 999999;
+    }
+</script>
+</body>
+</html>

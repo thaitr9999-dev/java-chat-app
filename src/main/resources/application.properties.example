@@ -1,0 +1,37 @@
+spring.application.name=chat-app
+
+spring.h2.console.path=/h2-console
+spring.jpa.open-in-view=false
+spring.jpa.show-sql=true 
+
+# H2 Database Configuration
+spring.datasource.url=jdbc:h2:mem:chatdb
+spring.datasource.driver-class-name=org.h2.Driver
+spring.jpa.hibernate.ddl-auto=create-drop
+spring.h2.console.enabled=true
+
+# File Upload Configuration
+# Giới hạn kích thước file upload
+spring.servlet.multipart.max-file-size=5MB
+# Giới hạn toàn bộ request (file + form fields)
+spring.servlet.multipart.max-request-size=5MB
+# Directory to store uploaded files
+file.upload-dir=uploads
+
+# JWT Configuration
+# ⚠️ IMPORTANT: Set JWT_SECRET environment variable before running in production!
+# This fallback value should NEVER be used in production!
+# 
+# macOS/Linux:
+#   export JWT_SECRET="your-very-long-secret-key-min-32-characters"
+#
+# Windows (PowerShell):
+#   $env:JWT_SECRET = "your-very-long-secret-key-min-32-characters"
+#
+# Windows (cmd):
+#   set JWT_SECRET=your-very-long-secret-key-min-32-characters
+#
+# Docker/Kubernetes: Set as environment variable in deployment configuration
+#
+jwt.secret=${JWT_SECRET:CHANGE_ME_IN_PRODUCTION_SET_ENV_VARIABLE}
+jwt.expiration-ms=86400000

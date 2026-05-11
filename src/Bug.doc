@@ -1,0 +1,507 @@
+## Tổng kết Debug Day 15
+---
+
+**Bug 1 — `function connect()` thiếu `async`**
+
+**🎯** `await fetch()` bên trong non-async function → JS throw syntax error ngay lập tức → `connect()` không chạy được gì cả.
+
+**1. Keyword:** `async/await` — cặp bắt buộc đi cùng nhau. `await` chỉ hợp lệ bên trong function được đánh dấu `async`.
+
+**⚙️**
+```
+connect() gọi await fetch()
+        ↓
+JS engine parse → thấy await trong non-async
+        ↓
+Syntax error → function dừng ngay → không có gì xảy ra
+```
+
+**🔥** Fix: thêm `async` vào `function connect()`. Cách khác: dùng `.then().catch()` không cần `async` — hoạt động được nhưng lồng nhau nhiều tầng, khó đọc hơn nhiều.
+
+---
+
+**Bug 2 — Single quote thay vì backtick**
+
+**🎯** `'ws://...?token=${token}'` — single quote không interpolate, server nhận đúng chuỗi `"${token}"` thay vì giá trị JWT thật → `isValid()` fail → reject.
+
+**1. Keyword:** Template literal — chỉ backtick `` ` `` mới cho phép nhúng biến qua `${}`.
+
+**⚙️**
+```
+token = "eyJ..."
+'ws://...?token=${token}'  →  gửi lên: "ws://...?token=${token}"  ← sai
+`ws://...?token=${token}`  →  gửi lên: "ws://...?token=eyJ..."   ← đúng
+```
+
+**🔥** Fix: đổi sang backtick. Cách khác: nối string `'ws://...?token=' + token` — hoạt động nhưng dài và dễ nhầm khi URL phức tạp hơn.
+
+---
+
+**Bug 3 — `index.html` bị 403**
+
+**🎯** `anyRequest().authenticated()` không có exception cho file tĩnh → browser request `/` → Spring chặn ngay → UI không load được.
+
+**1. Keyword:** `requestMatchers` — khai báo rule riêng cho path cụ thể, phải đặt trước `anyRequest()`.
+
+**⚙️**
+```
+Browser request /
+        ↓
+Spring check từng rule theo thứ tự
+        ↓
+Không match rule nào → anyRequest().authenticated() → 403
+        ↓
+UI chết hoàn toàn
+```
+
+**🔥** Fix: thêm `.requestMatchers("/", "/index.html").permitAll()`. Cách khác: để `anyRequest().permitAll()` — không cần thêm rule nhưng mất bảo mật toàn bộ app, không dùng được.
+
+---
+
+**Bug 4 — `select users` lặp liên tục**
+
+**🎯** `JwtFilter` chạy với mọi HTTP request kể cả WebSocket reconnect mỗi 5 giây → mỗi lần query DB một lần → log spam vô tận, lãng phí resource.
+
+**1. Keyword:** `getRequestURI()` — đọc path request. `shouldNotFilter()` — method của `OncePerRequestFilter` để khai báo path nào bỏ qua filter.
+
+**⚙️**
+```
+WebSocket reconnect mỗi 5s → HTTP upgrade request /ws
+        ↓
+JwtFilter chạy → không có Authorization header
+        ↓
+Nhưng vẫn chạy hết logic → query DB → log spam
+```
+
+**🔥** Fix: early return nếu path bắt đầu `/ws`. Cách chuẩn hơn: override `shouldNotFilter()`:
+```java
+@Override
+protected boolean shouldNotFilter(HttpServletRequest request) {
+    return request.getRequestURI().startsWith("/ws");
+}
+```
+Clean hơn, đúng Spring pattern hơn early return trong `doFilterInternal`.
+
+---
+
+**Bug 5 — WebSocket bị reject dù token đúng**
+
+**🎯** Spring Security check HTTP layer trước → chặn WebSocket upgrade request trước khi `JwtHandshakeInterceptor` kịp chạy → interceptor không bao giờ được gọi dù token hoàn toàn hợp lệ.
+
+**1. Keyword:** HTTP upgrade — WebSocket bắt đầu bằng HTTP request đặc biệt với header `Upgrade: websocket`. Spring Security check HTTP trước, không biết đây là WebSocket.
+
+**⚙️**
+```
+Client gọi ws://localhost:8080/ws?token=eyJ...
+        ↓
+Spring Security check HTTP → /ws không có rule → authenticated() → reject 403
+        ↓
+JwtHandshakeInterceptor không bao giờ được gọi
+```
+
+**🔥** Fix: thêm `.requestMatchers("/ws/**").permitAll()` — Security bỏ qua, interceptor vẫn verify JWT độc lập. 
+Cách khác chuẩn hơn cho production: implement `AbstractSecurityWebSocketMessageBrokerConfigurer` để tách biệt hoàn toàn HTTP security và WebSocket security — phức tạp hơn nhưng control được chi tiết hơn.
+
+
+
+
+Day16 fix bug 
+## Tổng kết Debug Session Day 16
+
+---
+
+**Tại sao debug theo cách đó?**
+
+Vấn đề là Nam không nhận được tin — có thể do 3 nguyên nhân: (1) message không đến server, (2) server xử lý sai, (3) server gửi đúng nhưng Nam không nhận. Thêm `System.out.println` vào đúng điểm nghi ngờ để biết vấn đề nằm ở tầng nào — đây là kỹ thuật **divide and conquer** trong debug.
+
+---
+
+**🎯 Nó làm gì và như thế nào?**
+
+Log 3 thứ tại entry point của `sendPrivateMessage()`: Principal có null không, recipient là ai, content là gì. Nếu method được gọi → vấn đề ở server. Nếu không có log → vấn đề ở client chưa gửi đúng destination.
+
+Kết quả log cho thấy:
+```
+=== PRIVATE MESSAGE ===
+Principal: NULL  ← vấn đề ở đây
+Recipient: nam
+Content: hello
+```
+
+Method được gọi đúng, recipient đúng — nhưng Principal null → nguyên nhân là `JwtChannelInterceptor` không set được user.
+
+---
+
+**1. Keyword lạ**
+
+`System.out.println` trong Spring — output thẳng ra console PowerShell đang chạy `mvn spring-boot:run`. Đơn giản nhất để verify giá trị runtime mà không cần tool bên ngoài.
+
+Ternary trong log:
+```java
+principal != null ? principal.getName() : "NULL"
+```
+Tránh NullPointerException ngay trong dòng log — nếu dùng `principal.getName()` trực tiếp mà principal null thì log cũng crash luôn.
+
+Early return sau khi phát hiện lỗi:
+```java
+if (principal == null) {
+    System.out.println("ERROR: Principal is null!");
+    return; // dừng lại, không gửi lung tung
+}
+```
+Ngăn message được gửi với sender null — tránh gây lỗi cascade ở các bước sau.
+
+---
+
+**⚙️ Nó chạy như nào?**
+
+```
+Client gửi tin riêng
+        ↓
+@MessageMapping("/private") được gọi
+        ↓
+System.out.println log ra console
+        ↓
+Đọc log → Principal: NULL
+        ↓
+Biết vấn đề ở JwtChannelInterceptor
+        ↓
+Kiểm tra code → đọc header "Authorization" thay vì "token"
+        ↓
+Fix → test lại → Principal: truong → hoạt động
+```
+
+---
+
+**🔥 So sánh với cách khác**
+
+Cách này — `System.out.println` thủ công, nhanh, không cần setup gì thêm, đủ dùng cho debug local.
+
+Cách chuẩn hơn: dùng `@Slf4j` + `log.debug()`:
+```java
+@Slf4j
+@Controller
+public class ChatController {
+    log.debug("Principal: {}", principal != null ? principal.getName() : "NULL");
+}
+```
+Lợi hơn vì có thể bật/tắt log level trong `application.properties` mà không cần sửa code — production tắt debug log, development bật lên. `System.out.println` luôn in ra bất kể môi trường nào.
+
+
+
+
+
+
+
+
+
+# 📚 Day 19 - File Upload + Input Validation: Giải thích Chi Tiết
+
+## 1️⃣ **Day 19 Làm Gì? Như Thế Nào?**
+
+### 🎯 **Mục tiêu:**
+Cho phép user upload file ảnh lên server một cách **an toàn**, với validation đầy đủ và bảo vệ chống các lỗi bảo mật.
+
+### 📊 **Flow tổng quát:**
+```
+User login → nhận JWT token
+       ↓
+POST /api/upload với file + Authorization header
+       ↓
+Server validate:
+  • File type (image/jpeg, image/png, image/gif)
+  • File size (≤ 5MB)
+  • File extension (.jpg, .jpeg, .png, .gif)
+       ↓
+Generate UUID → thay tên gốc
+       ↓
+Lưu vào thư mục /uploads/
+       ↓
+Trả URL: /uploads/{uuid}.jpg
+       ↓
+Công khai access file (không cần login)
+```
+
+---
+
+## 2️⃣ **Keywords Lạ Xuất Hiện**
+
+| Keyword | Ý nghĩa | Ví dụ |
+|---------|---------|-------|
+| **MultipartFile** | Interface Spring để nhận file upload | `@RequestParam("file") MultipartFile file` |
+| **@RequestParam** | Bind form field vào method parameter | `@RequestParam("file")` → lấy field "file" từ form-data |
+| **form-data** | HTTP content-type để gửi file (không phải JSON) | `Content-Type: multipart/form-data; boundary=...` |
+| **Content-Type** | MIME type của file | `image/jpeg`, `image/png`, `image/gif` |
+| **Path Traversal** | Attack: dùng ADMIN để escape thư mục | `"../../../etc/passwd"` → dangerous! |
+| **UUID** | Unique ID random 36 ký tự | `f47ac10b-58cc-4372-a567-0e02b2c3d479` |
+| **Sanitize** | Làm sạch/loại bỏ ký tự nguy hiểm | Thay tên file `avatar.jpg` → `{uuid}.jpg` |
+| **STATELESS** | Không lưu session, chỉ dùng JWT | `SessionCreationPolicy.STATELESS` |
+| **NIO Path** | Java API hiện đại để xử lý file/thư mục | `Paths.get()`, `Files.createDirectories()` |
+
+---
+
+## 3️⃣ **⚙️ Nó Chạy Như Nào? (High-Level)**
+
+### **Flowchart chi tiết:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 1. Client POST /api/upload                              │
+│    - Header: Authorization: Bearer {jwt_token}          │
+│    - Body: multipart/form-data {file: @truong.jpg}      │
+└──────────────────────┬──────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────┐
+│ 2. Spring Security Filter Chain                         │
+│    - JwtFilter kiểm tra token hợp lệ?                  │
+│    - Set SecurityContext với username                   │
+│    - Tiếp tục... (đã pass auth)                        │
+└──────────────────────┬──────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────┐
+│ 3. FileUploadController.uploadFile()                    │
+│    ```java                                               │
+│    public ResponseEntity<Map<String, String>>           │
+│        uploadFile(@RequestParam MultipartFile file) {   │
+│        String url = fileUploadService.save(file);       │
+│        return ResponseEntity.ok(Map.of("url", url));    │
+│    }                                                     │
+│    ```                                                   │
+└──────────────────────┬──────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────┐
+│ 4. FileUploadService.save(MultipartFile)                │
+│                                                         │
+│    ┌─── LAYER 1: Validate Content-Type ───┐             │
+│    │ if (contentType == null ||             │             │
+│    │     !["image/jpeg", "image/png",       │             │
+│    │      "image/gif"].contains(contentType))│           │
+│    │     throw IllegalArgumentException     │             │
+│    └─────────────────────────────────────────┘             │
+│                       ↓                                   │
+│    ┌─── LAYER 2: Validate Extension ───┐                │
+│    │ if (!filename.toLowerCase()         │                │
+│    │     .endsWith(".jpg/jpeg/png/gif")) │                │
+│    │     throw IllegalArgumentException  │                │
+│    └─────────────────────────────────────┘                │
+│                       ↓                                   │
+│    ┌─── LAYER 3: Sanitize Filename ───┐                 │
+│    │ String newName = UUID.randomUUID()│                 │
+│    │                  + ".jpg"         │                 │
+│    │ // "avatar.jpg" → "abc-123-...jpg"│                 │
+│    └─────────────────────────────────────┘                │
+│                       ↓                                   │
+│    ┌─── Create Directory ───┐                           │
+│    │ Path uploadPath =       │                           │
+│    │   Paths.get(workingDir, │                           │
+│    │   "uploads")            │                           │
+│    │ Files.createDirectories │                           │
+│    └─────────────────────────┘                           │
+│                       ↓                                   │
+│    ┌─── Save File ───┐                                  │
+│    │ file.transferTo │                                  │
+│    │   (uploadPath   │                                  │
+│    │ .resolve(newName)                                  │
+│    │   .toFile())    │                                  │
+│    └─────────────────┘                                  │
+│                       ↓                                   │
+│    ┌─── Return URL ───┐                                 │
+│    │ return           │                                 │
+│    │ "/uploads/"      │                                 │
+│    │ + newName        │                                 │
+│    └──────────────────┘                                 │
+└─────────────────────────────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────┐
+│ 5. Return Response 200 OK                               │
+│    {"url": "/uploads/abc-123-uuid.jpg"}                 │
+└─────────────────────────────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────┐
+│ 6. WebMvcConfig - Static Resource Mapping               │
+│    /uploads/** → /project/uploads/                      │
+│    → Spring serve file từ disk một cách public          │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 4️⃣ **🔥 Cách Thực Hiện + So Sánh**
+
+### **Cách tôi đã implement:**
+
+#### **📄 FileUploadService.java**
+```java
+@Service
+public class FileUploadService {
+    @Value("${file.upload-dir}")
+    private String uploadDir;
+
+    private static final List<String> ALLOWED_TYPES = 
+        List.of("image/jpeg", "image/png", "image/gif");
+
+    public String save(MultipartFile file) {
+        // ✅ LAYER 1: Validate Content-Type
+        String contentType = file.getContentType();
+        if (contentType == null || 
+            !ALLOWED_TYPES.contains(contentType)) {
+            throw new IllegalArgumentException(
+                "Chỉ chấp nhận file JPEG, PNG, GIF");
+        }
+
+        // ✅ LAYER 2: Validate Extension
+        String originalName = file.getOriginalFilename();
+        if (originalName == null || 
+            !hasImageExtension(originalName)) {
+            throw new IllegalArgumentException(
+                "Extension file không hợp lệ");
+        }
+
+        // ✅ LAYER 3: Sanitize - dùng UUID
+        String extension = originalName
+            .substring(originalName.lastIndexOf("."));
+        String newFilename = UUID.randomUUID().toString() 
+                           + extension;
+
+        try {
+            // ✅ Create directory với absolute path
+            String workingDir = 
+                System.getProperty("user.dir");
+            Path uploadPath = 
+                Paths.get(workingDir, uploadDir);
+            if (!Files.exists(uploadPath)) {
+                Files.createDirectories(uploadPath);
+            }
+
+            // ✅ Save file
+            Path filePath = uploadPath.resolve(newFilename);
+            file.transferTo(filePath.toFile());
+
+            return "/uploads/" + newFilename;
+
+        } catch (IOException e) {
+            throw new RuntimeException(
+                "Không thể lưu file: " + e.getMessage());
+        }
+    }
+
+    private boolean hasImageExtension(String filename) {
+        String lower = filename.toLowerCase();
+        return lower.endsWith(".jpg") || 
+               lower.endsWith(".jpeg") ||
+               lower.endsWith(".png") || 
+               lower.endsWith(".gif");
+    }
+}
+```
+
+---
+
+### **So Sánh: 3 Cách Khác Nhau**
+
+#### **❌ Cách 1: Lưu file với tên gốc (KHÔNG AN TOÀN!)**
+```java
+// ❌ KHÔNG nên làm vậy - có lỗ hổng bảo mật!
+String filename = file.getOriginalFilename();
+
+// Attack: tên file gốc là "../../../etc/passwd"
+// Kết quả: lưu vào /etc/passwd thay vì /uploads/
+Files.write(uploadPath.resolve(filename), 
+            file.getBytes());
+```
+
+**Vấn đề:**
+- Path traversal: `../../../etc/passwd`
+- Overwrite file khác
+- Tên file có ký tự đặc biệt gây lỗi
+
+---
+
+#### **⚠️ Cách 2: Chỉ dùng Random number (cơ bản)**
+```java
+// ⚠️ Cơ bản nhưng thiếu đặc thù file
+String newName = System.nanoTime() + "";
+file.transferTo(uploadPath.resolve(newName).toFile());
+// Kết quả: 1649527000000.jpg (không rõ loại file)
+```
+
+**Vấn đề:**
+- Mất thông tin loại file (extension)
+- Server phải đoán MIME type khi serve
+- URL không dễ nhận diện
+
+---
+
+#### **✅ Cách 3: Dùng UUID + Extension (BEST PRACTICE)**
+```java
+// ✅ Tốt nhất - an toàn + giữ extension
+String extension = filename.substring(
+    filename.lastIndexOf("."));
+String newName = UUID.randomUUID().toString() 
+               + extension;
+// Kết quả: 
+// f47ac10b-58cc-4372-a567-0e02b2c3d479.jpg
+// ↑ Một ID duy nhất              ↑ Dễ biết loại
+
+file.transferTo(uploadPath.resolve(newName)
+    .toFile());
+```
+
+**Ưu điểm:**
+- ✅ Chống path traversal 100%
+- ✅ Giữ extension → dễ serve file
+- ✅ UUID unique → không trùng
+- ✅ Bảo mật + tiện dụng
+
+---
+
+### **So Sánh Bảng:**
+
+| Tiêu chí | Cách 1 (Tên gốc) | Cách 2 (Random number) | Cách 3 (UUID) |
+|---------|-----------------|----------------------|--------------|
+| **Path Traversal** | ❌ Nguy hiểm | ✅ An toàn | ✅ An toàn |
+| **Extension** | ✅ Có | ❌ Không | ✅ Có |
+| **Unique** | ❌ Trùng khi re-upload | ✅ OK | ✅ OK |
+| **URL-friendly** | ✅ Dễ đọc | ⚠️ Khó nhận diện | ✅ Dễ |
+| **Performance** | ⚠️ Không cache | ✅ Cache được | ✅ Cache được |
+
+---
+
+## **📌 Tóm Tắt Day 19**
+
+| Thành phần | Mô tả | Vị trí |
+|-----------|-------|--------|
+| **Controller** | Nhận request, gọi service | `FileUploadController` |
+| **Service** | Logic validate + save | `FileUploadService` |
+| **Security** | JWT auth + rule | `SecurityConfig` |
+| **Static mapping** | Serve public file | `WebMvcConfig` |
+| **Config** | File size limit | application.properties |
+
+---
+
+## **🚀 Test Day 19:**
+
+```powershell
+# 1. Register
+$reg = Invoke-RestMethod -Uri "http://localhost:8080/auth/register" `
+  -Method POST -ContentType "application/json" `
+  -Body '{"username":"test","password":"123"}'
+
+# 2. Login
+$login = Invoke-RestMethod -Uri "http://localhost:8080/auth/login" `
+  -Method POST -ContentType "application/json" `
+  -Body '{"username":"test","password":"123"}'
+$token = $login.token
+
+# 3. Upload
+curl -X POST "http://localhost:8080/api/upload" `
+  -H "Authorization: Bearer $token" `
+  -F "file=@truong.jpg"
+# Response: {"url":"/uploads/uuid.jpg"}
+
+# 4. Access (công khai)
+curl "http://localhost:8080/uploads/uuid.jpg"
+# Status 200 - File accessible
+```
+
+Bạn hiểu rõ Day 19 rồi không? 🤔

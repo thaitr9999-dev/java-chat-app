@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Chat App</title>
+    <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+    <style>
+        body { font-family: Arial; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+        #messages { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 10px; margin-bottom: 10px; }
+        #private-messages { border: 1px solid #aaa; height: 150px; overflow-y: auto; padding: 10px; margin-top: 10px; background: #fff9e6; }
+        .message { margin: 5px 0; padding: 5px; background: #f0f0f0; border-radius: 4px; }
+        .join { color: green; font-style: italic; }
+        .private { background: #fff3cd; }
+        input { width: 70%; padding: 8px; }
+        button { padding: 8px 16px; margin-left: 5px; cursor: pointer; }
+        #status { color: red; font-weight: bold; }
+        .layout { display: flex; gap: 20px; }
+        #sidebar { width: 160px; border-left: 1px solid #ccc; padding-left: 12px; flex-shrink: 0; }
+        #online-list { list-style: none; padding: 0; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <h2>Chat App <span id="unread-badge" style="background: red; color: white; padding: 2px 6px; border-radius: 10px; font-size: 12px; display: none;"></span></h2>
+    <p>Status: <span id="status">Chưa kết nối</span></p>
+
+    <div id="login-area">
+        <input type="text" id="username" placeholder="Nhập tên của bạn..." />
+        <input type="password" id="password" placeholder="Nhập password..." />
+        <button onclick="connect()">Kết nối</button>
+    </div>
+
+    <div class="layout">
+    <div style="flex:1">
+    <div id="chat-area" style="display:none">        
+        <!-- Global chat -->
+        <h4>Chat chung</h4>
+        <div id="messages"></div>
+        <input type="text" id="messageInput" placeholder="Nhập tin nhắn..."
+               onkeypress="if(event.key==='Enter') sendMessage()" />
+        <button onclick="sendMessage()">Gửi</button>
+
+        <!-- Private chat -->
+        <hr/>
+        <h4>Nhắn riêng</h4>
+        <input type="text" id="recipientInput" placeholder="Tên người nhận..." />
+        <input type="text" id="privateInput" placeholder="Nhập tin nhắn riêng..."
+               onkeypress="if(event.key==='Enter') sendPrivateMessage()" />
+        <button onclick="sendPrivateMessage()">Gửi riêng</button>
+        <div id="private-messages"></div>
+
+        <!-- Day 19: File Upload -->
+        <hr/>
+        <h4>📤 Upload ảnh</h4>
+        <input type="file" id="fileInput" accept="image/jpeg,image/png,image/gif" />
+        <button onclick="uploadFile()">Upload</button>
+        <div id="uploadStatus" style="margin-top: 10px; color: #666;"></div>
+        <div id="uploadedImages" style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 10px;"></div>
+</div>
+</div>
+<div id="sidebar">
+    <strong>Online (<span id="online-count">0</span>)</strong>
+    <ul id="online-list"></ul>
+</div>
+</div>
+
+<script>
+    let stompClient = null;
+    let username = null;
+    let isFirstConnect = true;
+
+    async function updateUnreadBadge() {
+        const token = localStorage.getItem('authToken');
+        if (!token) return;
+
+        try {
+            const res = await fetch('/api/messages/unread-count', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const count = await res.json();
+                const badge = document.getElementById('unread-badge');
+                if (count > 0) {
+                    badge.innerText = count;
+                    badge.style.display = 'inline';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+        } catch (error) {
+            console.error('Error updating badge:', error);
+        }
+    }
+
+    async function markMessagesAsRead() {
+        const token = localStorage.getItem('authToken');
+        if (!token) return;
+
+        try {
+            await fetch('/api/messages/mark-read', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            updateUnreadBadge(); // Update badge after marking as read
+        } catch (error) {
+            console.error('Error marking messages as read:', error);
+        }
+    }
+
+    async function connect() {
+        username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value.trim();
+
+        if (!username || !password) {
+            alert('Nhập đủ thông tin!');
+            return;
+        }
+
+        const res = await fetch('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+
+        if (!res.ok) {
+            alert('Sai username hoặc password!');
+            return;
+        }
+
+        const data = await res.json();
+        const token = data.token;
+
+        // ✅ Store token for file upload
+        localStorage.setItem('authToken', token);
+
+        stompClient = new StompJs.Client({
+            brokerURL: `ws://localhost:8080/ws?token=${token}`,
+            connectHeaders:{
+                token: token
+            },
+            reconnectDelay: 5000,
+            debug: function(str) { console.log('STOMP: ' + str); },
+
+            onConnect: function(frame) {
+                document.getElementById('status').style.color = 'green';
+                document.getElementById('status').innerText = 'Đã kết nối ✓';
+                document.getElementById('login-area').style.display = 'none';
+                document.getElementById('chat-area').style.display = 'block';
+
+                // Update unread badge when connected
+                updateUnreadBadge();
+
+                // Subscribe global chat
+                stompClient.subscribe('/topic/public', function(message) {
+                    showMessage(JSON.parse(message.body));
+                });
+
+                // Subscribe private chat
+                stompClient.subscribe('/user/queue/private', function(message) {
+                    showPrivateMessage(JSON.parse(message.body));
+                });
+
+                // Subscribe online users — Day 17
+                stompClient.subscribe('/topic/online-users', function(message) {
+                    const users = JSON.parse(message.body);
+                    document.getElementById('online-count').innerText = users.length;
+                    const list = document.getElementById('online-list');
+                    list.innerHTML = '';
+                    users.forEach(function(u) {
+                        const li = document.createElement('li');
+                        li.innerText = '🟢 ' + u;
+                        li.style.margin = '4px 0';
+                        list.appendChild(li);
+                    });
+                });
+
+                if (isFirstConnect) {
+                    isFirstConnect = false;
+
+                    stompClient.publish({
+                        destination: '/app/chat.addUser',
+                        body: JSON.stringify({ sender: username, type: 'JOIN' })
+                    });
+
+                    fetch('/api/messages')
+                        .then(res => res.json())
+                        .then(history => {
+                            history.forEach(msg => showMessage(msg));
+                        })
+                        .catch(err => console.log('History error:', err));
+                }
+            },
+
+            onDisconnect: function() {
+                document.getElementById('status').innerText = 'Mất kết nối — đang kết nối lại...';
+                document.getElementById('status').style.color = 'orange';
+            },
+
+            onStompError: function(frame) {
+                console.error('STOMP error:', frame);
+            },
+
+            onWebSocketError: function(error) {
+                console.error('WebSocket error:', error);
+            }
+        });
+
+        stompClient.activate();
+    }
+
+    function sendMessage() {
+        const input = document.getElementById('messageInput');
+        const content = input.value.trim();
+        if (!content || !stompClient) return;
+
+        stompClient.publish({
+            destination: '/app/chat.sendMessage',
+            body: JSON.stringify({ sender: username, content: content, type: 'CHAT' })
+        });
+        input.value = '';
+    }
+
+    function sendPrivateMessage() {
+        const recipient = document.getElementById('recipientInput').value.trim();
+        const content = document.getElementById('privateInput').value.trim();
+        if (!recipient || !content || !stompClient) return;
+
+        stompClient.publish({
+            destination: '/app/private',
+            body: JSON.stringify({ recipient: recipient, content: content })
+        });
+        document.getElementById('privateInput').value = '';
+
+        showPrivateMessage({ sender: 'Tôi → ' + recipient, content: content });
+    }
+
+    function showMessage(message) {
+        const div = document.createElement('div');
+        if (message.type === 'JOIN') {
+            div.className = 'message join';
+            div.innerText = `${message.sender} đã vào phòng chat`;
+        } else if (message.type === 'LEAVE') {
+            div.className = 'message join';
+            div.innerText = `${message.sender} đã rời phòng chat`;
+        } else {
+            div.className = 'message';
+            div.innerText = `${message.sender}: ${message.content}`;
+        }
+        document.getElementById('messages').appendChild(div);
+        document.getElementById('messages').scrollTop = 999999;
+    }
+
+    function showPrivateMessage(message) {
+        const div = document.createElement('div');
+        div.className = 'message private';
+        div.innerText = `[Riêng] ${message.sender}: ${message.content}`;
+        document.getElementById('private-messages').appendChild(div);
+        document.getElementById('private-messages').scrollTop = 999999;
+    }
+
+    // Day 19: File Upload Function
+    async function uploadFile() {
+        const fileInput = document.getElementById('fileInput');
+        const file = fileInput.files[0];
+        
+        if (!file) {
+            alert('Vui lòng chọn file!');
+            return;
+        }
+
+        if (!stompClient) {
+            alert('Chưa kết nối! Vui lòng đăng nhập trước.');
+            return;
+        }
+
+        // Get token from login response (we need to store it)
+        const token = localStorage.getItem('authToken');
+        if (!token) {
+            alert('Token hết hạn! Vui lòng đăng nhập lại.');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const statusDiv = document.getElementById('uploadStatus');
+        statusDiv.innerText = '⏳ Đang upload...';
+
+        try {
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error(`Upload failed: ${response.status}`);
+            }
+
+            const data = await response.json();
+            const imageUrl = data.url;
+
+            statusDiv.innerHTML = `✅ Upload thành công! <a href="${imageUrl}" target="_blank">Xem ảnh</a>`;
+            fileInput.value = '';
+
+            // Display uploaded image
+            const imgHTML = `<img src="${imageUrl}" style="max-width: 100px; max-height: 100px; border-radius: 4px; cursor: pointer;" onclick="window.open('${imageUrl}', '_blank')" title="Click to view" />`;
+            document.getElementById('uploadedImages').innerHTML += imgHTML;
+
+            // Send image link to chat
+            const chatInput = document.getElementById('messageInput');
+            chatInput.value = `📸 Ảnh: ${imageUrl}`;
+            
+        } catch (error) {
+            statusDiv.innerHTML = `❌ Lỗi: ${error.message}`;
+            console.error('Upload error:', error);
+        }
+    }
+
+    // Mark messages as read when user interacts with chat
+    document.getElementById('messageInput').addEventListener('focus', markMessagesAsRead);
+    document.getElementById('messages').addEventListener('click', markMessagesAsRead);
+</script>
+</body>
+</html>
